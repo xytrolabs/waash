@@ -1,6 +1,6 @@
 [package]
 name = "waash"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "What An Amazing SHell - A Linux shell combining FISH interactivity with BASH power"
 repository = "https://github.com/xytrolabs/waash"

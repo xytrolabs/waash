@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.3.0] — In progress — Background, expansion, jobs & builtins
+## [0.3.0] — 2026-08-31 — Background jobs, expansion, jobs & builtins
 
 ### Added
 - **Brace expansion** — `{a,b}`, `{1..5}`, `x{a,b}` and nested/range forms

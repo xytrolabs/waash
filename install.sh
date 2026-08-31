@@ -124,9 +124,13 @@ build() {
 install() {
   mkdir -p "$BIN_DIR" "$LIB_DIR" "$DOCS_DIR"
 
-  # Binary
-  cp "$SRC_DIR/target/release/waash" "$BIN_DIR/waash"
-  chmod +x "$BIN_DIR/waash"
+  # Binary — copy to a temp name then `mv` over, so a RUNNING waash isn't
+  # "text file busy" (mv replaces the directory entry atomically; the old
+  # process keeps its inode).
+  local tmp_bin="$BIN_DIR/waash.new.$$"
+  cp "$SRC_DIR/target/release/waash" "$tmp_bin"
+  chmod +x "$tmp_bin"
+  mv -f "$tmp_bin" "$BIN_DIR/waash"
   ok "Installed waash -> $BIN_DIR/waash"
 
   # Helper library for scripts
@@ -185,27 +189,76 @@ check_indent() {
 
 # ── Version ─────────────────────────────────────────────────────────────
 print_version() {
-  if [ -n "$SRC_DIR" ] && [ -f "$SRC_DIR/Cargo.toml" ]; then
-    grep -m1 '^version' "$SRC_DIR/Cargo.toml" | sed 's/version *= *//; s/"//g' | awk '{print "waash "$1}'
-  elif [ -f "$REPO_DIR/Cargo.toml" ]; then
-    grep -m1 '^version' "$REPO_DIR/Cargo.toml" | sed 's/version *= *//; s/"//g' | awk '{print "waash "$1}'
+  local ver=""
+  if [ -f "$REPO_DIR/Cargo.toml" ]; then
+    ver=$(grep -m1 '^version' "$REPO_DIR/Cargo.toml")
+  elif [ -n "$SRC_DIR" ] && [ -f "$SRC_DIR/Cargo.toml" ]; then
+    ver=$(grep -m1 '^version' "$SRC_DIR/Cargo.toml")
+  fi
+  if [ -n "$ver" ]; then
+    # version = "0.2.0"  ->  0.2.0
+    printf 'waash %s\n' "${ver#* =}" | tr -d '"'
+  elif command -v curl >/dev/null 2>&1; then
+    # Piped install: fetch the version straight from the repo (no clone).
+    ver=$(curl -fsSL "$WAASH_REPO_URL/raw/main/Cargo.toml" 2>/dev/null | grep -m1 '^version' || true)
+    if [ -n "$ver" ]; then
+      printf 'waash %s\n' "${ver#* =}" | tr -d '"'
+    else
+      echo "waash (from $WAASH_REPO_URL)"
+    fi
   else
     echo "waash (from $WAASH_REPO_URL)"
   fi
 }
 
+# ── Help ─────────────────────────────────────────────────────────────────
+print_help() {
+  cat <<'EOF'
+WAASH installer — What An Amazing SHell
+
+Usage:
+  bash install.sh                 # detect, build, install
+  bash install.sh --no-build      # just copy an existing target/release/waash
+  bash install.sh --prefix DIR    # install under DIR (default ~/.local)
+  bash install.sh --version       # print version and exit
+
+Options:
+  --no-build      Use an existing target/release/waash (no cargo build)
+  --prefix DIR    Install under DIR (default ~/.local)
+  --version       Print the WAASH version and exit
+  -h, --help      Show this help
+EOF
+}
+
 # ── Main ────────────────────────────────────────────────────────────────
 main() {
-  for arg in "$@"; do
+  local i=0
+  while [ "$i" -lt "$#" ]; do
+    local arg="${*:i+1:1}"
     case "$arg" in
       --no-build) NO_BUILD=1 ;;
-      --prefix) ;;
+      --prefix)
+        # Consume the NEXT argument as the value: `--prefix ~/.local`.
+        i=$((i+1))
+        if [ "$i" -lt "$#" ]; then
+          PREFIX="${*:i+1:1}"
+        else
+          die "--prefix requires a value"
+        fi
+        ;;
       --prefix=*) PREFIX="${arg#--prefix=}" ;;
       --version) print_version; exit 0 ;;
-      -h|--help) sed -n '2,16p' "${BASH_SOURCE[0]}"; exit 0 ;;
+      -h|--help) print_help; exit 0 ;;
       *) die "Unknown option: $arg (see --help)" ;;
     esac
+    i=$((i+1))
   done
+
+  # Recompute the install paths from the (possibly overridden) PREFIX — the
+  # top-of-script defaults were computed before `--prefix` was parsed.
+  BIN_DIR="$PREFIX/bin"
+  LIB_DIR="$PREFIX/share/waash/lib"
+  DOCS_DIR="$PREFIX/share/waash/docs"
 
   echo
   echo "  ${c_yellow}WAASH — What An Amazing SHell${c_reset}"
