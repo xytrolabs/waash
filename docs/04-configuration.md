@@ -150,6 +150,7 @@ edit_mode = "emacs"          # or "vi"
 live_refresh = true          # keep the prompt live: time, CPU load & sudo badge update every second
 job_control = true           # per-command process groups + terminal handoff (needed for Ctrl+B)
 bg_shortcut = "Ctrl+B"        # single key to move a running foreground command to the background
+bg_hint = true                # print a redirect hint when you background a task (output stays on terminal)
 startup_commands = [         # WAASH commands to run once at interactive startup (~/.waashrc)
   "alias ll = 'ls -la'",
   "export EDITOR = 'nvim'",
@@ -188,6 +189,12 @@ startup_commands = [         # WAASH commands to run once at interactive startup
 > `Ctrl+X` form (e.g. `Ctrl+B`, `Ctrl+Z`). Requires `job_control = true`.
 > Note: this remaps the terminal's suspend key, so the classic Ctrl+Z
 > "stop-then-`bg`" workflow is replaced by this one-key version.
+
+> **`bg_hint`** — when you background a foreground-started command, its output
+> stays on the terminal (a running process can't have its output redirected).
+> When enabled (default), WAASH prints a one-line hint after backgrounding
+> reminding you to redirect with `> log 2>&1` if you want it silenced. Set to
+> `false` to suppress the hint.
 
 ---
 
