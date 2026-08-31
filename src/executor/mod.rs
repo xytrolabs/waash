@@ -82,6 +82,9 @@ pub struct Executor {
     /// Whether to print a hint after the move-to-background shortcut (reminding
     /// that output stays on the terminal unless redirected).
     bg_hint: bool,
+    /// Auto-background any foreground command running longer than this many
+    /// seconds (0 = off). Interactive commands (user typing) are exempt.
+    auto_bg_seconds: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -223,6 +226,27 @@ enum FgEvent {
     /// The move-to-background shortcut byte was read directly from the tty
     /// (used when the child program reset the terminal's suspend char).
     BgKey,
+    /// Auto-background: the command ran longer than `auto_bg_seconds` and the
+    /// user wasn't interacting with it.
+    AutoBg,
+}
+
+/// Whether the terminal has input pending, WITHOUT consuming it. Used to
+/// avoid auto-backgrounding a command the user is actively typing into.
+fn tty_readable() -> bool {
+    use std::io::IsTerminal;
+    use std::os::unix::io::AsRawFd;
+    if !io::stdin().is_terminal() {
+        return false;
+    }
+    let fd = io::stdin().as_raw_fd();
+    let mut pfd = nix::libc::pollfd {
+        fd,
+        events: nix::libc::POLLIN,
+        revents: 0,
+    };
+    let r = unsafe { nix::libc::poll(&mut pfd, 1, 0) };
+    r > 0 && (pfd.revents & nix::libc::POLLIN) != 0
 }
 
 /// Non-blockingly read one byte from the terminal, returning `None` if none is
@@ -266,6 +290,7 @@ impl Executor {
             in_background_child: false,
             bg_key: 0x02, // Ctrl+B
             bg_hint: true,
+            auto_bg_seconds: 0,
         }
     }
 
@@ -287,6 +312,11 @@ impl Executor {
     /// Enable/disable the move-to-background redirect hint.
     pub fn set_bg_hint(&mut self, enabled: bool) {
         self.bg_hint = enabled;
+    }
+
+    /// Set the auto-background time threshold (seconds; 0 = off).
+    pub fn set_auto_bg_seconds(&mut self, secs: u64) {
+        self.auto_bg_seconds = secs;
     }
 
     /// Set the terminal's suspend character (VSUSP) to `byte`, so a foreground
@@ -324,7 +354,12 @@ impl Executor {
     /// move-to-background shortcut key. This is robust against child programs
     /// (like bash running a script) that reset the terminal's suspend char: if
     /// the key isn't delivered as a signal, we read it straight from the tty.
-    fn wait_foreground(&self, pid: Pid, bg_key: u8) -> FgEvent {
+    ///
+    /// If `auto_bg_seconds > 0` and the child is still running after that many
+    /// seconds (and the user isn't actively typing into it), it is returned as
+    /// [`FgEvent::AutoBg`] so the caller can move it to the background.
+    fn wait_foreground(&self, pid: Pid, bg_key: u8, auto_bg_seconds: u64) -> FgEvent {
+        let start = std::time::Instant::now();
         loop {
             match waitpid(pid, Some(WaitPidFlag::WNOHANG | WaitPidFlag::WUNTRACED)) {
                 Ok(WaitStatus::Exited(_, code)) => return FgEvent::Exited(code),
@@ -339,8 +374,45 @@ impl Executor {
                     return FgEvent::BgKey;
                 }
             }
+            // Auto-background once the command has run long enough — but only
+            // if the user isn't currently typing into it (interactive).
+            if auto_bg_seconds > 0
+                && start.elapsed().as_secs() >= auto_bg_seconds
+                && !tty_readable()
+            {
+                return FgEvent::AutoBg;
+            }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
+    }
+
+    /// Move a foreground job to the background (keeps running). `auto` marks
+    /// it as an autonomous (timeout) background so the notice reads
+    /// "auto-moved" instead of "moved".
+    fn background_job(&mut self, pid: Pid, pgid: Pid, command: &str, auto: bool) -> ExitStatus {
+        // SIGCONT is a no-op if the child never actually stopped.
+        let _ = signal::killpg(pgid, Signal::SIGCONT);
+        let js = self.jobs.len() + 1;
+        self.jobs.push(Job {
+            pid,
+            pgid,
+            command: command.to_string(),
+            state: JobState::Running,
+            code: None,
+        });
+        self.background_jobs.fetch_add(1, Ordering::Relaxed);
+        let verb = if auto { "auto-moved" } else { "moved" };
+        let notice = format!("[{}] {} {} to background", js, command, verb);
+        self.notify(if self.bg_hint {
+            format!(
+                "{} — output still on terminal; start with \"> log 2>&1\" to silence",
+                notice
+            )
+        } else {
+            notice
+        });
+        self.last_exit = 0;
+        ExitStatus::Code(0)
     }
 
     /// Enable/disable Ctrl+Z job control (see the `job_control` field).
@@ -567,7 +639,7 @@ impl Executor {
                     // the shell then moves to the background.
                     self.set_susp_char(self.bg_key);
 
-                    let waited = self.wait_foreground(child, self.bg_key);
+                    let waited = self.wait_foreground(child, self.bg_key, self.auto_bg_seconds);
 
                     // Give the terminal back to the shell before touching the
                     // terminal again (rustyline redraws the next prompt).
@@ -585,32 +657,10 @@ impl Executor {
                             Ok(ExitStatus::Signal(sig))
                         }
                         FgEvent::Stopped | FgEvent::BgKey => {
-                            // Move-to-background shortcut (Ctrl+B): continue the
-                            // job in the background so it keeps running, and add
-                            // it to the job table. SIGCONT is a no-op if the
-                            // child never actually stopped (BgKey path).
-                            let _ = signal::killpg(child, Signal::SIGCONT);
-                            let js = self.jobs.len() + 1;
-                            let command = cmd.render();
-                            self.jobs.push(Job {
-                                pid: child,
-                                pgid: child,
-                                command: command.clone(),
-                                state: JobState::Running,
-                                code: None,
-                            });
-                            self.background_jobs.fetch_add(1, Ordering::Relaxed);
-                            let notice = format!("[{}] {} moved to background", js, command);
-                            self.notify(if self.bg_hint {
-                                format!(
-                                    "{} — output still on terminal; start with \"> log 2>&1\" to silence",
-                                    notice
-                                )
-                            } else {
-                                notice
-                            });
-                            self.last_exit = 0;
-                            Ok(ExitStatus::Code(0))
+                            Ok(self.background_job(child, child, &cmd.render(), false))
+                        }
+                        FgEvent::AutoBg => {
+                            Ok(self.background_job(child, child, &cmd.render(), true))
                         }
                     }
                 } else {
@@ -782,8 +832,9 @@ impl Executor {
         // Wait for all children (retrying on EINTR)
         let mut last_status = ExitStatus::Code(0);
         let mut stopped = false;
+        let mut auto_bg = false;
         for child in children {
-            match self.wait_foreground(child, self.bg_key) {
+            match self.wait_foreground(child, self.bg_key, self.auto_bg_seconds) {
                 FgEvent::Exited(code) => {
                     last_status = ExitStatus::Code(code);
                 }
@@ -793,6 +844,11 @@ impl Executor {
                 FgEvent::Stopped | FgEvent::BgKey => {
                     stopped = true;
                     break; // a member was Ctrl+B'd — background the pipeline
+                }
+                FgEvent::AutoBg => {
+                    stopped = true;
+                    auto_bg = true;
+                    break; // ran too long — auto-background the pipeline
                 }
             }
         }
@@ -804,7 +860,6 @@ impl Executor {
         }
 
         if stopped {
-            let js = self.jobs.len() + 1;
             let sep = if pipeline.pipe_stderr { " |& " } else { " | " };
             let command = pipeline
                 .commands
@@ -812,28 +867,7 @@ impl Executor {
                 .map(|c| c.render())
                 .collect::<Vec<_>>()
                 .join(sep);
-            // Move-to-background shortcut (Ctrl+B): resume the pipeline in the
-            // background so it keeps running.
-            let _ = signal::killpg(pgid, Signal::SIGCONT);
-            self.jobs.push(Job {
-                pid: leader_pid,
-                pgid,
-                command: command.clone(),
-                state: JobState::Running,
-                code: None,
-            });
-            self.background_jobs.fetch_add(1, Ordering::Relaxed);
-            let notice = format!("[{}] {} moved to background", js, command);
-            self.notify(if self.bg_hint {
-                format!(
-                    "{} — output still on terminal; start with \"> log 2>&1\" to silence",
-                    notice
-                )
-            } else {
-                notice
-            });
-            self.last_exit = 0;
-            return Ok(ExitStatus::Code(0));
+            return Ok(self.background_job(leader_pid, pgid, &command, auto_bg));
         }
 
         self.last_exit = last_status.code();

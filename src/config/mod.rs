@@ -198,6 +198,13 @@ pub struct ShellConfig {
     /// how to redirect it to a log instead.
     #[serde(default = "default_true")]
     pub bg_hint: bool,
+
+    /// Auto-background a foreground command that runs longer than this many
+    /// seconds (0 = off). Commands you're actively typing into (input available
+    /// on the terminal) are NOT auto-backgrounded. The command keeps running in
+    /// the background and the prompt returns.
+    #[serde(default)]
+    pub auto_bg_seconds: u64,
 }
 
 /// A single alias entry.
@@ -366,6 +373,7 @@ impl Default for ShellConfig {
             job_control: true,
             bg_shortcut: default_bg_shortcut(),
             bg_hint: true,
+            auto_bg_seconds: 0,
         }
     }
 }

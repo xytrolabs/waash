@@ -218,6 +218,7 @@ impl WaashRepl {
         executor.set_job_control(config.shell.job_control);
         executor.set_bg_shortcut(&config.shell.bg_shortcut);
         executor.set_bg_hint(config.shell.bg_hint);
+        executor.set_auto_bg_seconds(config.shell.auto_bg_seconds);
 
         // The prompt shares the executor's live background-job counter so the
         // `{jobs}` indicator reflects how many tasks are running/stopped.

@@ -151,6 +151,7 @@ live_refresh = true          # keep the prompt live: time, CPU load & sudo badge
 job_control = true           # per-command process groups + terminal handoff (needed for Ctrl+B)
 bg_shortcut = "Ctrl+B"        # single key to move a running foreground command to the background
 bg_hint = true                # print a redirect hint when you background a task (output stays on terminal)
+auto_bg_seconds = 0           # auto-background a foreground command running longer than this (0 = off)
 startup_commands = [         # WAASH commands to run once at interactive startup (~/.waashrc)
   "alias ll = 'ls -la'",
   "export EDITOR = 'nvim'",
@@ -195,6 +196,12 @@ startup_commands = [         # WAASH commands to run once at interactive startup
 > When enabled (default), WAASH prints a one-line hint after backgrounding
 > reminding you to redirect with `> log 2>&1` if you want it silenced. Set to
 > `false` to suppress the hint.
+
+> **`auto_bg_seconds`** — autonomously move a foreground command to the
+> background once it has run longer than this many seconds (0 = off). The
+> command keeps running in the background and the prompt returns with the
+> `⏳N` indicator. As a safeguard, a command you're actively typing into is
+> **not** auto-backgrounded. Requires `job_control = true`.
 
 ---
 
