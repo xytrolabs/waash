@@ -206,28 +206,29 @@ Exit codes: `0` = success, non-zero = failure. `$?` holds the last status.
 ## Background Jobs
 
 Append `&` to run a command in the background, or press **Ctrl+Z** to suspend a
-running foreground command and move it to the background. While any background
-task is running or stopped, the prompt shows a live **`⏳N` indicator** (N =
-number of active background tasks).
+running foreground command and move it to the background. The **right status
+line** always shows a live **`⏳N` indicator** (N = active background tasks),
+right next to the CPU-load meter: `⚙ 2.3 │ ⏳ 1 │ 14:05:33`. It reads `⏳ 0`
+when no background tasks are running.
 
 ```
 % sleep 100 &
 [1] 12345
-·⏳1 % jobs
+% jobs
 [1] + Running  pid=12345  sleep 100
-·⏳1 % fg                  # bring it to the foreground
+% fg                  # bring it to the foreground
 ^Z[1] sleep 100 stopped   # Ctrl+Z suspends it...
-·⏳1 % bg                  # ...and resumes it in the background
+% bg                  # ...and resumes it in the background
 [1] sleep 100 continued
-·⏳1 % disown              # stop tracking it (keeps running detached)
+% disown              # stop tracking it (keeps running detached)
 ```
 
 Move a long-running task (a download, a build) to the background:
 
 1. Start it normally in the foreground: `% wget https://.../big.iso`
 2. Press **Ctrl+Z** — it is suspended and reported as a stopped job.
-3. Type `bg` — it resumes in the background; the prompt shows `⏳1` and stays
-   usable. You can launch more tasks; each adds to the indicator (`⏳2`, `⏳3`).
+3. Type `bg` — it resumes in the background; the `⏳N` indicator on the right
+   counts up as you launch more tasks (`⏳ 2`, `⏳ 3`).
 
 Job control builtins:
 
@@ -249,10 +250,9 @@ Useful extras:
   (e.g. `sleep 30 &` then `wait $!`).
 - `~` expands to your home directory (`~/Downloads`, `~user/x`).
 
-The `⏳N` prompt indicator is the `{jobs}` template variable — remove it from
-your prompt template in `config.toml` if you don't want it, or place it
-anywhere you like. Ctrl+Z job control can be disabled entirely with
-`[shell] job_control = false`.
+The `⏳N` background-task indicator lives on the **right status line** next to
+the CPU-load meter (always visible, `⏳ 0` when idle). Ctrl+Z job control can be
+disabled entirely with `[shell] job_control = false`.
 
 WAASH automatically reaps finished background jobs, so you won't leave
 zombie processes around.

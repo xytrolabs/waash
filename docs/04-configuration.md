@@ -95,7 +95,7 @@ show_hostname = true     # show user@hostname
 | `{shlvl}` | Shell nesting level |
 | `{shell}` | "waash" |
 | `{version}` | WAASH version |
-| `{jobs}` | Active background-job count, e.g. `⏳2` (empty when none) |
+| `{jobs}` | (legacy) background-job count — now shown on the right status line |
 | `{newline}` | Newline (for multi-line prompts) |
 
 ### Example prompts
