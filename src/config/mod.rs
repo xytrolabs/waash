@@ -209,7 +209,7 @@ fn default_prompt_template() -> String {
     // macOS Terminal-inspired: user@host dir (git) on line 1, `%` on line 2.
     // The inline right-info (battery/load/time/duration) is added by the
     // prompt renderer on the first line automatically.
-    "{separator} {user}@{host} {dir} {git}{venv}{newline}{sudo}{exit_code}{jobs}{prompt} ".into()
+    "{separator} {user}@{host} {dir} {git}{venv}{newline}{sudo}{exit_code}{prompt} ".into()
 }
 
 fn default_prompt_char_ok() -> String {

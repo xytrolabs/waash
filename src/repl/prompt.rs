@@ -292,6 +292,12 @@ impl PromptStyle {
             parts.push(format!("⚙{:>4}", format!("{:.1}", load)));
         }
 
+        // Background tasks — always visible, right next to the CPU load so it
+        // stays on the status line (not mixed with sudo/error on line 2).
+        // Fixed 3 cells (⏳ + 2 digits) so live refresh keeps a stable width.
+        let bg = self.background_jobs.load(Ordering::Relaxed);
+        parts.push(format!("⏳{:>2}", bg));
+
         // Always show time (HH:MM:SS — fixed 8).
         parts.push(time_str);
 
@@ -303,12 +309,10 @@ impl PromptStyle {
     }
 
     fn jobs_segment(&self) -> String {
-        let n = self.background_jobs.load(Ordering::Relaxed);
-        if n > 0 {
-            format!("{} ", Yellow.paint(format!("⏳{}", n)))
-        } else {
-            String::new()
-        }
+        // The background-task count now lives on the right-side status line
+        // (see [`Self::build_right_prompt`]), so the `{jobs}` template
+        // placeholder renders nothing to avoid double-display.
+        String::new()
     }
 
     fn git_segment(&self) -> String {
