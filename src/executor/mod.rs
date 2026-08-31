@@ -325,9 +325,8 @@ impl Executor {
     }
 
     /// Set the terminal's suspend character (VSUSP) to `byte`, so a foreground
-    /// child with the terminal sends SIGTSTP when that key is pressed. Only
-    /// applies when stdin is a tty; the original char is remembered for
-    /// [`Self::restore_susp_char`].
+    /// child with the terminal sends SIGTSTP when that key is pressed. The
+    /// original char is remembered for [`Self::restore_susp_char`].
     fn set_susp_char(&self, byte: u8) {
         use nix::sys::termios::{SetArg, SpecialCharacterIndices, tcgetattr, tcsetattr};
         if !nix::unistd::isatty(io::stdin().as_raw_fd()).unwrap_or(false) {
@@ -365,18 +364,40 @@ impl Executor {
     /// [`FgEvent::AutoBg`] so the caller can move it to the background.
     fn wait_foreground(&self, pid: Pid, bg_key: u8, auto_bg_seconds: u64) -> FgEvent {
         let start = std::time::Instant::now();
+        let mut susp_set = false;
         loop {
-            match waitpid(pid, Some(WaitPidFlag::WNOHANG | WaitPidFlag::WUNTRACED)) {
-                Ok(WaitStatus::Exited(_, code)) => return FgEvent::Exited(code),
-                Ok(WaitStatus::Signaled(_, sig, _)) => return FgEvent::Signaled(sig as i32),
-                Ok(WaitStatus::Stopped(_, _)) => return FgEvent::Stopped,
-                Ok(WaitStatus::StillAlive) | Ok(_) => {}
-                Err(Errno::EINTR) => {}
-                Err(_) => return FgEvent::Exited(1),
+            let done = match waitpid(pid, Some(WaitPidFlag::WNOHANG | WaitPidFlag::WUNTRACED)) {
+                Ok(WaitStatus::Exited(_, code)) => Some(FgEvent::Exited(code)),
+                Ok(WaitStatus::Signaled(_, sig, _)) => Some(FgEvent::Signaled(sig as i32)),
+                Ok(WaitStatus::Stopped(_, _)) => Some(FgEvent::Stopped),
+                Ok(WaitStatus::StillAlive) | Ok(_) => None,
+                Err(Errno::EINTR) => None,
+                Err(_) => Some(FgEvent::Exited(1)),
+            };
+            if let Some(ev) = done {
+                if susp_set {
+                    self.restore_susp_char();
+                }
+                return ev;
             }
-            if let Some(b) = read_tty_byte() {
-                if b == bg_key {
-                    return FgEvent::BgKey;
+            // Defer the VSUSP remap until the command has run a moment, so fast
+            // commands (which can't be Ctrl+B'd anyway) never trigger a termios
+            // change that could race with their output.
+            if !susp_set && start.elapsed().as_millis() >= 300 {
+                self.set_susp_char(bg_key);
+                susp_set = true;
+            }
+            // Only read the tty when input is actually pending (a cheap,
+            // non-invasive poll), so we don't churn the terminal for fast
+            // commands.
+            if tty_readable() {
+                if let Some(b) = read_tty_byte() {
+                    if b == bg_key {
+                        if susp_set {
+                            self.restore_susp_char();
+                        }
+                        return FgEvent::BgKey;
+                    }
                 }
             }
             // Auto-background once the command has run long enough — but only
@@ -385,6 +406,9 @@ impl Executor {
                 && start.elapsed().as_secs() >= auto_bg_seconds
                 && !tty_readable()
             {
+                if susp_set {
+                    self.restore_susp_char();
+                }
                 return FgEvent::AutoBg;
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
@@ -653,9 +677,6 @@ impl Executor {
                     let _ = setpgid(child, child);
                     let tty = io::stdin().as_raw_fd();
                     unsafe { nix::libc::tcsetpgrp(tty, child.as_raw()) };
-                    // Remap the suspend key so Ctrl+B stops the child, which
-                    // the shell then moves to the background.
-                    self.set_susp_char(self.bg_key);
 
                     let auto_bg = if self.bg_eligible { self.auto_bg_seconds } else { 0 };
                     let waited = self.wait_foreground(child, self.bg_key, auto_bg);
@@ -663,7 +684,6 @@ impl Executor {
                     // Give the terminal back to the shell before touching the
                     // terminal again (rustyline redraws the next prompt).
                     unsafe { nix::libc::tcsetpgrp(tty, unistd::getpgrp().as_raw()) };
-                    self.restore_susp_char();
 
                     match waited {
                         FgEvent::Exited(code) => {
@@ -845,7 +865,6 @@ impl Executor {
         let leader_pid = children[0];
         if self.job_control && !self.in_background_child {
             unsafe { nix::libc::tcsetpgrp(tty, pgid.as_raw()) };
-            self.set_susp_char(self.bg_key);
         }
 
         // Wait for all children (retrying on EINTR)
@@ -876,7 +895,6 @@ impl Executor {
         // Give the terminal back to the shell.
         if self.job_control && !self.in_background_child {
             unsafe { nix::libc::tcsetpgrp(tty, unistd::getpgrp().as_raw()) };
-            self.restore_susp_char();
         }
 
         if stopped {
