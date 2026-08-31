@@ -85,6 +85,10 @@ pub struct Executor {
     /// Auto-background any foreground command running longer than this many
     /// seconds (0 = off). Interactive commands (user typing) are exempt.
     auto_bg_seconds: u64,
+    /// Whether the currently executing command is eligible for auto-background.
+    /// Only the final standalone command of a script is eligible, so a
+    /// `cmd1; cmd2` sequence runs in order instead of backgrounding `cmd1`.
+    bg_eligible: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -291,6 +295,7 @@ impl Executor {
             bg_key: 0x02, // Ctrl+B
             bg_hint: true,
             auto_bg_seconds: 0,
+            bg_eligible: false,
         }
     }
 
@@ -502,8 +507,13 @@ impl Executor {
     /// Execute a parsed script, returning the exit status of the last command.
     pub fn execute(&mut self, script: &Script, heredoc_inputs: &mut dyn Iterator<Item = String>) -> Result<ExitStatus, String> {
         let mut last_status = ExitStatus::Code(0);
+        let total = script.commands.len();
 
-        for cmd in &script.commands {
+        for (idx, cmd) in script.commands.iter().enumerate() {
+            // Auto-background only applies to the final standalone command, so
+            // a `cmd1; cmd2` sequence runs in order instead of backgrounding
+            // `cmd1` and losing its follow-up output.
+            self.bg_eligible = idx == total - 1;
             last_status = self.execute_command(cmd, heredoc_inputs)?;
 
             // Handle Exit status (from `exit` builtin)
@@ -525,20 +535,28 @@ impl Executor {
             Command::Simple(sc) => self.execute_simple(sc, heredoc_inputs),
             Command::Pipeline(p) => self.execute_pipeline(p, heredoc_inputs),
             Command::And(left, right) => {
+                let saved = self.bg_eligible;
+                self.bg_eligible = false;
                 let status = self.execute_command(left, heredoc_inputs)?;
-                if status.is_success() {
-                    self.execute_command(right, heredoc_inputs)
+                let result = if status.is_success() {
+                    self.execute_command(right, heredoc_inputs)?
                 } else {
-                    Ok(status)
-                }
+                    status
+                };
+                self.bg_eligible = saved;
+                Ok(result)
             }
             Command::Or(left, right) => {
+                let saved = self.bg_eligible;
+                self.bg_eligible = false;
                 let status = self.execute_command(left, heredoc_inputs)?;
-                if !status.is_success() {
-                    self.execute_command(right, heredoc_inputs)
+                let result = if !status.is_success() {
+                    self.execute_command(right, heredoc_inputs)?
                 } else {
-                    Ok(status)
-                }
+                    status
+                };
+                self.bg_eligible = saved;
+                Ok(result)
             }
             Command::Background(cmd) => self.execute_background(cmd, heredoc_inputs),
             Command::Subshell(script) => {
@@ -639,7 +657,8 @@ impl Executor {
                     // the shell then moves to the background.
                     self.set_susp_char(self.bg_key);
 
-                    let waited = self.wait_foreground(child, self.bg_key, self.auto_bg_seconds);
+                    let auto_bg = if self.bg_eligible { self.auto_bg_seconds } else { 0 };
+                    let waited = self.wait_foreground(child, self.bg_key, auto_bg);
 
                     // Give the terminal back to the shell before touching the
                     // terminal again (rustyline redraws the next prompt).
@@ -833,8 +852,9 @@ impl Executor {
         let mut last_status = ExitStatus::Code(0);
         let mut stopped = false;
         let mut auto_bg = false;
+        let bg_auto_secs = if self.bg_eligible { self.auto_bg_seconds } else { 0 };
         for child in children {
-            match self.wait_foreground(child, self.bg_key, self.auto_bg_seconds) {
+            match self.wait_foreground(child, self.bg_key, bg_auto_secs) {
                 FgEvent::Exited(code) => {
                     last_status = ExitStatus::Code(code);
                 }
