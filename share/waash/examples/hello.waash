@@ -1,0 +1,22 @@
+#! WAASH Example — just type commands, no imports needed!
+
+header "WAASH Script Example"
+info "Running from Indent-powered WAASH"
+say ""
+
+#! Git info
+git branch --show-current
+
+say ""
+
+#! System info
+hostname
+
+say ""
+
+#! Cargo — directly!
+cargo --version
+
+say ""
+
+success "Script complete!"

@@ -1,0 +1,58 @@
+#! WAASH build script — build a Rust project
+#! Uses Indent syntax: if/or/otherwise (no colons)
+
+fun main
+  header "WAASH Build Script"
+
+  #! Step 1: Check prerequisites
+  var has_cargo = has_command "cargo"
+  if has_cargo == false
+    error "cargo is required"
+    process_exit 1
+
+  success "cargo found"
+  say sh_capture "cargo --version"
+
+  #! Step 2: Run tests
+  info "Running tests..."
+  var test_result = os_system "cargo test --quiet"
+
+  if test_result != 0
+    error "Tests failed!"
+    process_exit test_result
+
+  success "All tests pass"
+
+  #! Step 3: Build release
+  info "Building release..."
+  var build_result = os_system "cargo build --release"
+
+  if build_result != 0
+    error "Build failed!"
+    process_exit build_result
+
+  success "Build complete"
+
+  #! Step 4: Show binary size
+  var size = sh_capture "ls -lh target/release/waash | awk '{print $5}'"
+  info "Binary size:"
+  say size
+
+  #! Step 5: Install prompt
+  var answer = ask "Install to ~/.local/bin? [y/N] "
+  var wants = lower answer
+  var is_yes = wants == "y"
+  var is_full = wants == "yes"
+  var do_install = is_yes or is_full
+
+  if do_install
+    var install = os_system "cp target/release/waash ~/.local/bin/waash"
+    if install != 0
+      error "Install failed"
+      process_exit install
+    success "Installed!"
+
+  say ""
+  header "Done!"
+
+main

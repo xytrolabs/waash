@@ -1,0 +1,82 @@
+#! waash.ind — WAASH shell helpers for Indent scripts
+
+#! Run a command and return its exit code (0 = success)
+fun sh command
+  give os_system command
+
+#! Run a command and capture its output as a string
+fun sh_capture command
+  var tmp = "/tmp/waash_cap_"
+  var perf = time_perf_counter
+  var perf_str = string perf
+  var tmp_full = tmp
+  tmp_full is tmp_full + perf_str
+  tmp_full is tmp_full + ".txt"
+  var full_cmd = command
+  full_cmd is full_cmd + " > "
+  full_cmd is full_cmd + tmp_full
+  full_cmd is full_cmd + " 2>&1"
+  var code = os_system full_cmd
+  var output = ""
+  var exists = os_exists tmp_full
+  if exists
+    output is file_read_text tmp_full
+    os_remove tmp_full
+  give output
+
+#! Get an environment variable with a default
+fun env var_name default
+  var val = os_getenv var_name
+  var is_empty = val == ""
+  if is_empty
+    give default
+  give val
+
+#! Set an environment variable
+fun set_env name value
+  os_setenv name value
+  give 0
+
+#! Check if a command exists in PATH
+fun has_command name
+  var cmd = "which "
+  cmd is cmd + name
+  cmd is cmd + " > /dev/null 2>&1"
+  var result = os_system cmd
+  give result == 0
+
+#! Check if path exists
+fun exists path
+  give os_exists path
+
+#! Read entire file
+fun read_file path
+  give file_read_text path
+
+#! Write to file
+fun write_file path content
+  file_write_text path content
+  give 0
+
+#! Append to file
+fun append_file path content
+  file_append_text path content
+  give 0
+
+#! Print a header
+fun header text
+  say ""
+  say "═══ " + text + " ═══"
+  say ""
+
+#! Print success
+fun success text
+  say "✅ " + text
+
+#! Print error
+fun error text
+  say "❌ " + text
+
+#! Print info
+fun info text
+  say "ℹ️  " + text
