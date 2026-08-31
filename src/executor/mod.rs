@@ -79,6 +79,9 @@ pub struct Executor {
     /// Terminal suspend-char byte used as the single-key "move to background"
     /// shortcut. Default Ctrl+B (0x02); configurable via `[shell] bg_shortcut`.
     bg_key: u8,
+    /// Whether to print a hint after the move-to-background shortcut (reminding
+    /// that output stays on the terminal unless redirected).
+    bg_hint: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -262,6 +265,7 @@ impl Executor {
             job_control: true,
             in_background_child: false,
             bg_key: 0x02, // Ctrl+B
+            bg_hint: true,
         }
     }
 
@@ -278,6 +282,11 @@ impl Executor {
             }
         }
         self.bg_key = 0x02;
+    }
+
+    /// Enable/disable the move-to-background redirect hint.
+    pub fn set_bg_hint(&mut self, enabled: bool) {
+        self.bg_hint = enabled;
     }
 
     /// Set the terminal's suspend character (VSUSP) to `byte`, so a foreground
@@ -591,7 +600,15 @@ impl Executor {
                                 code: None,
                             });
                             self.background_jobs.fetch_add(1, Ordering::Relaxed);
-                            self.notify(format!("[{}] {} moved to background", js, command));
+                            let notice = format!("[{}] {} moved to background", js, command);
+                            self.notify(if self.bg_hint {
+                                format!(
+                                    "{} — output still on terminal; start with \"> log 2>&1\" to silence",
+                                    notice
+                                )
+                            } else {
+                                notice
+                            });
                             self.last_exit = 0;
                             Ok(ExitStatus::Code(0))
                         }
@@ -806,7 +823,15 @@ impl Executor {
                 code: None,
             });
             self.background_jobs.fetch_add(1, Ordering::Relaxed);
-            self.notify(format!("[{}] {} moved to background", js, command));
+            let notice = format!("[{}] {} moved to background", js, command);
+            self.notify(if self.bg_hint {
+                format!(
+                    "{} — output still on terminal; start with \"> log 2>&1\" to silence",
+                    notice
+                )
+            } else {
+                notice
+            });
             self.last_exit = 0;
             return Ok(ExitStatus::Code(0));
         }

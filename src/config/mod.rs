@@ -191,6 +191,13 @@ pub struct ShellConfig {
     /// background and the prompt returns). Default `Ctrl+B`.
     #[serde(default = "default_bg_shortcut")]
     pub bg_shortcut: String,
+
+    /// When you background a foreground-started command with the shortcut, its
+    /// output stays on the terminal (a running process can't have its output
+    /// redirected). When enabled, WAASH prints a one-line hint reminding you
+    /// how to redirect it to a log instead.
+    #[serde(default = "default_true")]
+    pub bg_hint: bool,
 }
 
 /// A single alias entry.
@@ -358,6 +365,7 @@ impl Default for ShellConfig {
             startup_commands: Vec::new(),
             job_control: true,
             bg_shortcut: default_bg_shortcut(),
+            bg_hint: true,
         }
     }
 }
