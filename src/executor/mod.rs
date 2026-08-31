@@ -210,6 +210,41 @@ fn signal_from_name(name: &str) -> Option<Signal> {
 /// after temporarily remapping it for the "move to background" shortcut.
 static ORIG_SUSP: Mutex<Option<u8>> = Mutex::new(None);
 
+/// Outcome of waiting for a foreground child, including the possibility that
+/// the user pressed the move-to-background shortcut key.
+enum FgEvent {
+    Exited(i32),
+    Signaled(i32),
+    /// Child was stopped (terminal suspend char worked — e.g. Ctrl+B via VSUSP).
+    Stopped,
+    /// The move-to-background shortcut byte was read directly from the tty
+    /// (used when the child program reset the terminal's suspend char).
+    BgKey,
+}
+
+/// Non-blockingly read one byte from the terminal, returning `None` if none is
+/// available or stdin isn't a tty. Used to detect the move-to-background key
+/// even when a foreground child has reset the terminal's signal characters.
+fn read_tty_byte() -> Option<u8> {
+    use std::io::IsTerminal;
+    use std::os::unix::io::AsRawFd;
+    if !io::stdin().is_terminal() {
+        return None;
+    }
+    let fd = io::stdin().as_raw_fd();
+    let flags = nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_GETFL).unwrap_or(0);
+    let nonblock = nix::fcntl::OFlag::from_bits_truncate(flags) | nix::fcntl::OFlag::O_NONBLOCK;
+    let _ = nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_SETFL(nonblock));
+    let mut b = [0u8; 1];
+    let n = unsafe { nix::libc::read(fd, b.as_mut_ptr() as *mut _, 1) };
+    let _ = nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_SETFL(nix::fcntl::OFlag::from_bits_truncate(flags)));
+    if n > 0 {
+        Some(b[0])
+    } else {
+        None
+    }
+}
+
 impl Executor {
     pub fn new() -> Self {
         let history_file = dirs::config_dir()
@@ -273,6 +308,29 @@ impl Executor {
         let orig = *ORIG_SUSP.lock().unwrap();
         if let Some(orig) = orig {
             self.set_susp_char(orig);
+        }
+    }
+
+    /// Wait for a foreground child while ALSO watching the terminal for the
+    /// move-to-background shortcut key. This is robust against child programs
+    /// (like bash running a script) that reset the terminal's suspend char: if
+    /// the key isn't delivered as a signal, we read it straight from the tty.
+    fn wait_foreground(&self, pid: Pid, bg_key: u8) -> FgEvent {
+        loop {
+            match waitpid(pid, Some(WaitPidFlag::WNOHANG | WaitPidFlag::WUNTRACED)) {
+                Ok(WaitStatus::Exited(_, code)) => return FgEvent::Exited(code),
+                Ok(WaitStatus::Signaled(_, sig, _)) => return FgEvent::Signaled(sig as i32),
+                Ok(WaitStatus::Stopped(_, _)) => return FgEvent::Stopped,
+                Ok(WaitStatus::StillAlive) | Ok(_) => {}
+                Err(Errno::EINTR) => {}
+                Err(_) => return FgEvent::Exited(1),
+            }
+            if let Some(b) = read_tty_byte() {
+                if b == bg_key {
+                    return FgEvent::BgKey;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
         }
     }
 
@@ -500,27 +558,28 @@ impl Executor {
                     // the shell then moves to the background.
                     self.set_susp_char(self.bg_key);
 
-                    let waited = wait_for_child(child);
+                    let waited = self.wait_foreground(child, self.bg_key);
 
                     // Give the terminal back to the shell before touching the
                     // terminal again (rustyline redraws the next prompt).
                     unsafe { nix::libc::tcsetpgrp(tty, unistd::getpgrp().as_raw()) };
                     self.restore_susp_char();
 
-                    match waited.map_err(|e| e)? {
-                        WaitStatus::Exited(_, code) => {
+                    match waited {
+                        FgEvent::Exited(code) => {
                             self.last_exit = code;
                             Ok(ExitStatus::Code(code))
                         }
-                        WaitStatus::Signaled(_, sig, _) => {
+                        FgEvent::Signaled(sig) => {
                             let code = 128 + sig as i32;
                             self.last_exit = code;
-                            Ok(ExitStatus::Signal(sig as i32))
+                            Ok(ExitStatus::Signal(sig))
                         }
-                        WaitStatus::Stopped(_, _) => {
-                            // Move-to-background shortcut (Ctrl+B): continue
-                            // the job in the background so it keeps running,
-                            // and add it to the job table.
+                        FgEvent::Stopped | FgEvent::BgKey => {
+                            // Move-to-background shortcut (Ctrl+B): continue the
+                            // job in the background so it keeps running, and add
+                            // it to the job table. SIGCONT is a no-op if the
+                            // child never actually stopped (BgKey path).
                             let _ = signal::killpg(child, Signal::SIGCONT);
                             let js = self.jobs.len() + 1;
                             let command = cmd.render();
@@ -536,7 +595,6 @@ impl Executor {
                             self.last_exit = 0;
                             Ok(ExitStatus::Code(0))
                         }
-                        _ => Ok(ExitStatus::Code(1)),
                     }
                 } else {
                     // Wait for child (retrying on EINTR)
@@ -708,19 +766,17 @@ impl Executor {
         let mut last_status = ExitStatus::Code(0);
         let mut stopped = false;
         for child in children {
-            match wait_for_child(child) {
-                Ok(WaitStatus::Exited(_, code)) => {
+            match self.wait_foreground(child, self.bg_key) {
+                FgEvent::Exited(code) => {
                     last_status = ExitStatus::Code(code);
                 }
-                Ok(WaitStatus::Signaled(_, sig, _)) => {
-                    last_status = ExitStatus::Signal(sig as i32);
+                FgEvent::Signaled(sig) => {
+                    last_status = ExitStatus::Signal(sig);
                 }
-                Ok(WaitStatus::Stopped(_, _)) => {
+                FgEvent::Stopped | FgEvent::BgKey => {
                     stopped = true;
                     break; // a member was Ctrl+B'd — background the pipeline
                 }
-                Ok(_) => {}
-                Err(_) => {}
             }
         }
 
