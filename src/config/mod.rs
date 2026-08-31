@@ -185,6 +185,12 @@ pub struct ShellConfig {
     /// oddities.
     #[serde(default = "default_true")]
     pub job_control: bool,
+
+    /// Single-key "move to background" shortcut. While a foreground command
+    /// runs, pressing this key backgrounds it (it keeps running in the
+    /// background and the prompt returns). Default `Ctrl+B`.
+    #[serde(default = "default_bg_shortcut")]
+    pub bg_shortcut: String,
 }
 
 /// A single alias entry.
@@ -284,6 +290,10 @@ fn default_edit_mode() -> String {
     "emacs".into()
 }
 
+fn default_bg_shortcut() -> String {
+    "Ctrl+B".into()
+}
+
 // ── Config loading ──
 
 impl Default for WaashConfig {
@@ -347,6 +357,7 @@ impl Default for ShellConfig {
             live_refresh: false,
             startup_commands: Vec::new(),
             job_control: true,
+            bg_shortcut: default_bg_shortcut(),
         }
     }
 }

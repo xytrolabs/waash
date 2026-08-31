@@ -76,6 +76,9 @@ pub struct Executor {
     /// NOT hand the terminal to their own children or act as a foreground job
     /// — they run detached from the terminal.
     in_background_child: bool,
+    /// Terminal suspend-char byte used as the single-key "move to background"
+    /// shortcut. Default Ctrl+B (0x02); configurable via `[shell] bg_shortcut`.
+    bg_key: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -203,6 +206,10 @@ fn signal_from_name(name: &str) -> Option<Signal> {
     })
 }
 
+/// The terminal's original suspend character, remembered so we can restore it
+/// after temporarily remapping it for the "move to background" shortcut.
+static ORIG_SUSP: Mutex<Option<u8>> = Mutex::new(None);
+
 impl Executor {
     pub fn new() -> Self {
         let history_file = dirs::config_dir()
@@ -219,6 +226,53 @@ impl Executor {
             background_jobs: Arc::new(AtomicUsize::new(0)),
             job_control: true,
             in_background_child: false,
+            bg_key: 0x02, // Ctrl+B
+        }
+    }
+
+    /// Set the single-key "move to background" shortcut. Accepts `Ctrl+X`
+    /// (maps to the control byte); anything else falls back to Ctrl+B.
+    pub fn set_bg_shortcut(&mut self, s: &str) {
+        if let Some(ch) = s.strip_prefix("Ctrl+") {
+            if let Some(c) = ch.chars().next() {
+                let lower = c.to_ascii_lowercase();
+                if ('a'..='z').contains(&lower) {
+                    self.bg_key = (lower as u8) - b'a' + 1;
+                    return;
+                }
+            }
+        }
+        self.bg_key = 0x02;
+    }
+
+    /// Set the terminal's suspend character (VSUSP) to `byte`, so a foreground
+    /// child with the terminal sends SIGTSTP when that key is pressed. Only
+    /// applies when stdin is a tty; the original char is remembered for
+    /// [`Self::restore_susp_char`].
+    fn set_susp_char(&self, byte: u8) {
+        use nix::sys::termios::{SetArg, SpecialCharacterIndices, tcgetattr, tcsetattr};
+        if !nix::unistd::isatty(io::stdin().as_raw_fd()).unwrap_or(false) {
+            return;
+        }
+        let mut t = match tcgetattr(&io::stdin()) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        {
+            let mut guard = ORIG_SUSP.lock().unwrap();
+            if guard.is_none() {
+                *guard = Some(t.control_chars[SpecialCharacterIndices::VSUSP as usize]);
+            }
+        }
+        t.control_chars[SpecialCharacterIndices::VSUSP as usize] = byte;
+        let _ = tcsetattr(&io::stdin(), SetArg::TCSANOW, &t);
+    }
+
+    /// Restore the terminal's original suspend character.
+    fn restore_susp_char(&self) {
+        let orig = *ORIG_SUSP.lock().unwrap();
+        if let Some(orig) = orig {
+            self.set_susp_char(orig);
         }
     }
 
@@ -442,12 +496,16 @@ impl Executor {
                     let _ = setpgid(child, child);
                     let tty = io::stdin().as_raw_fd();
                     unsafe { nix::libc::tcsetpgrp(tty, child.as_raw()) };
+                    // Remap the suspend key so Ctrl+B stops the child, which
+                    // the shell then moves to the background.
+                    self.set_susp_char(self.bg_key);
 
                     let waited = wait_for_child(child);
 
                     // Give the terminal back to the shell before touching the
                     // terminal again (rustyline redraws the next prompt).
                     unsafe { nix::libc::tcsetpgrp(tty, unistd::getpgrp().as_raw()) };
+                    self.restore_susp_char();
 
                     match waited.map_err(|e| e)? {
                         WaitStatus::Exited(_, code) => {
@@ -460,19 +518,21 @@ impl Executor {
                             Ok(ExitStatus::Signal(sig as i32))
                         }
                         WaitStatus::Stopped(_, _) => {
-                            // Ctrl+Z: suspend the job and add it to the
-                            // background table so `bg`/`fg`/`jobs` manage it.
+                            // Move-to-background shortcut (Ctrl+B): continue
+                            // the job in the background so it keeps running,
+                            // and add it to the job table.
+                            let _ = signal::killpg(child, Signal::SIGCONT);
                             let js = self.jobs.len() + 1;
                             let command = cmd.render();
                             self.jobs.push(Job {
                                 pid: child,
                                 pgid: child,
                                 command: command.clone(),
-                                state: JobState::Stopped,
+                                state: JobState::Running,
                                 code: None,
                             });
                             self.background_jobs.fetch_add(1, Ordering::Relaxed);
-                            self.notify(format!("[{}] {} stopped", js, command));
+                            self.notify(format!("[{}] {} moved to background", js, command));
                             self.last_exit = 0;
                             Ok(ExitStatus::Code(0))
                         }
@@ -641,6 +701,7 @@ impl Executor {
         let leader_pid = children[0];
         if self.job_control && !self.in_background_child {
             unsafe { nix::libc::tcsetpgrp(tty, pgid.as_raw()) };
+            self.set_susp_char(self.bg_key);
         }
 
         // Wait for all children (retrying on EINTR)
@@ -656,7 +717,7 @@ impl Executor {
                 }
                 Ok(WaitStatus::Stopped(_, _)) => {
                     stopped = true;
-                    break; // a member was Ctrl+Z'd — suspend the whole pipeline
+                    break; // a member was Ctrl+B'd — background the pipeline
                 }
                 Ok(_) => {}
                 Err(_) => {}
@@ -666,6 +727,7 @@ impl Executor {
         // Give the terminal back to the shell.
         if self.job_control && !self.in_background_child {
             unsafe { nix::libc::tcsetpgrp(tty, unistd::getpgrp().as_raw()) };
+            self.restore_susp_char();
         }
 
         if stopped {
@@ -677,15 +739,18 @@ impl Executor {
                 .map(|c| c.render())
                 .collect::<Vec<_>>()
                 .join(sep);
+            // Move-to-background shortcut (Ctrl+B): resume the pipeline in the
+            // background so it keeps running.
+            let _ = signal::killpg(pgid, Signal::SIGCONT);
             self.jobs.push(Job {
                 pid: leader_pid,
                 pgid,
                 command: command.clone(),
-                state: JobState::Stopped,
+                state: JobState::Running,
                 code: None,
             });
             self.background_jobs.fetch_add(1, Ordering::Relaxed);
-            self.notify(format!("[{}] {} stopped", js, command));
+            self.notify(format!("[{}] {} moved to background", js, command));
             self.last_exit = 0;
             return Ok(ExitStatus::Code(0));
         }

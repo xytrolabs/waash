@@ -205,11 +205,11 @@ Exit codes: `0` = success, non-zero = failure. `$?` holds the last status.
 
 ## Background Jobs
 
-Append `&` to run a command in the background, or press **Ctrl+Z** to suspend a
-running foreground command and move it to the background. The **right status
-line** always shows a live **`⏳N` indicator** (N = active background tasks),
-right next to the CPU-load meter: `⚙ 2.3 │ ⏳ 1 │ 14:05:33`. It reads `⏳ 0`
-when no background tasks are running.
+Append `&` to run a command in the background, or press **Ctrl+B** to move a
+running foreground command to the background — it keeps running and the prompt
+returns. The **right status line** always shows a live **`⏳N` indicator** (N =
+active background tasks), right next to the CPU-load meter:
+`⚙ 2.3 │ ⏳ 1 │ 14:05:33`. It reads `⏳ 0` when no background tasks are running.
 
 ```
 % sleep 100 &
@@ -217,18 +217,18 @@ when no background tasks are running.
 % jobs
 [1] + Running  pid=12345  sleep 100
 % fg                  # bring it to the foreground
-^Z[1] sleep 100 stopped   # Ctrl+Z suspends it...
-% bg                  # ...and resumes it in the background
-[1] sleep 100 continued
+^B[1] sleep 100 moved to background   # press Ctrl+B: backgrounds it (keeps running)
 % disown              # stop tracking it (keeps running detached)
 ```
 
 Move a long-running task (a download, a build) to the background:
 
 1. Start it normally in the foreground: `% wget https://.../big.iso`
-2. Press **Ctrl+Z** — it is suspended and reported as a stopped job.
-3. Type `bg` — it resumes in the background; the `⏳N` indicator on the right
-   counts up as you launch more tasks (`⏳ 2`, `⏳ 3`).
+2. Press **Ctrl+B** — it's moved to the background and keeps running; the
+   prompt returns with the `⏳N` indicator counting up as you launch more
+   tasks (`⏳ 2`, `⏳ 3`).
+
+> The shortcut is configurable via `[shell] bg_shortcut` (default `Ctrl+B`).
 
 Job control builtins:
 

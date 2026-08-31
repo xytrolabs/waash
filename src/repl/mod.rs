@@ -216,6 +216,7 @@ impl WaashRepl {
         executor.load_config_aliases(&config.aliases);
         executor.set_history_file(history_file.clone());
         executor.set_job_control(config.shell.job_control);
+        executor.set_bg_shortcut(&config.shell.bg_shortcut);
 
         // The prompt shares the executor's live background-job counter so the
         // `{jobs}` indicator reflects how many tasks are running/stopped.

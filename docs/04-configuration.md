@@ -148,7 +148,8 @@ auto_completion = true
 tab_width = 4
 edit_mode = "emacs"          # or "vi"
 live_refresh = true          # keep the prompt live: time, CPU load & sudo badge update every second
-job_control = true           # Ctrl+Z to suspend a foreground command & move it to the background
+job_control = true           # per-command process groups + terminal handoff (needed for Ctrl+B)
+bg_shortcut = "Ctrl+B"        # single key to move a running foreground command to the background
 startup_commands = [         # WAASH commands to run once at interactive startup (~/.waashrc)
   "alias ll = 'ls -la'",
   "export EDITOR = 'nvim'",
@@ -176,11 +177,17 @@ startup_commands = [         # WAASH commands to run once at interactive startup
 > there is already present.
 
 > **`job_control`** — when enabled (default), each foreground command runs in
-> its own process group with the terminal handed to it, so pressing **Ctrl+Z**
-> suspends that command instead of the whole shell. You can then resume it in
-> the background with `bg` (or bring it back with `fg`) — great for parking a
-> long download or build without blocking the shell. Set it to `false` to
-> restore the old always-foreground behavior.
+> its own process group with the terminal handed to it, so a dedicated
+> **move-to-background** shortcut can suspend it and let WAASH continue it in
+> the background. Set it to `false` to restore the old always-foreground
+> behavior.
+
+> **`bg_shortcut`** — the single key that moves a running foreground command to
+> the background (`Ctrl+B` by default). While a command runs, press it and the
+> command keeps running in the background while the prompt returns. Accepts any
+> `Ctrl+X` form (e.g. `Ctrl+B`, `Ctrl+Z`). Requires `job_control = true`.
+> Note: this remaps the terminal's suspend key, so the classic Ctrl+Z
+> "stop-then-`bg`" workflow is replaced by this one-key version.
 
 ---
 
