@@ -353,19 +353,27 @@ impl WaashRepl {
                     // Time the command execution
                     let start = std::time::Instant::now();
 
-                    // If the line starts a multi-line bash control-flow block,
-                    // collect it and run via bash (hybrid). Otherwise parse
-                    // and execute normally.
-                    let status = match self.try_bash_block(&line) {
-                        Some(status) => status,
-                        None => {
-                            match self.parse_and_execute(&line) {
+                    // A submitted line may contain embedded newlines — this is
+                    // what a pasted multi-line block looks like once it reaches
+                    // readline (bracketed or otherwise). Split it into physical
+                    // lines and run each in turn, rather than trying to parse
+                    // the whole blob as one line.
+                    let lines: Vec<&str> = line.split('\n').collect();
+                    let status = if lines.len() > 1 {
+                        self.execute_pasted_lines(&lines)
+                    } else {
+                        // If the line starts a multi-line bash control-flow
+                        // block, collect it interactively and run via bash
+                        // (hybrid). Otherwise parse and execute normally.
+                        match self.try_bash_block(lines[0]) {
+                            Some(status) => status,
+                            None => match self.parse_and_execute(lines[0]) {
                                 Ok(status) => status,
                                 Err(e) => {
                                     eprintln!("waash: {}", e);
                                     crate::executor::ExitStatus::Code(1)
                                 }
-                            }
+                            },
                         }
                     };
 
@@ -421,7 +429,6 @@ impl WaashRepl {
     }
 
     fn parse_and_execute(&mut self, input: &str) -> Result<crate::executor::ExitStatus, String> {
-        // Expand `{a,b}` / `{1..3}` before lexing (per-word, bash semantics).
         let input = crate::wordexp::expand_braces_line(input);
         let mut scanner = Scanner::new(input);
         scanner.lex_all().map_err(|e| format!("lexer error: {}", e))?;
@@ -439,6 +446,64 @@ impl WaashRepl {
 
         let no_lines: Vec<String> = Vec::new();
         self.executor.execute(&script, &mut no_lines.into_iter())
+    }
+
+    /// Execute a pasted (or otherwise multi-line) block, line by line. `lines`
+    /// is the split of a single submitted readline result that contained
+    /// embedded newlines.
+    ///
+    /// Blank lines and full-line comments are skipped. Consecutive lines that
+    /// form a bash control-flow block (if/for/while/case/function) are grouped
+    /// and run through bash as one unit; everything else is parsed and run by
+    /// WAASH, so state (cd, variables) carries forward between lines just like
+    /// typing them at the prompt.
+    fn execute_pasted_lines(&mut self, lines: &[&str]) -> crate::executor::ExitStatus {
+        use bashblock::{bash_block_done, starts_bash_block};
+
+        let mut final_status = crate::executor::ExitStatus::Code(0);
+        let mut i = 0;
+        let n = lines.len();
+        while i < n {
+            let line = lines[i].trim();
+            i += 1;
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            // Group consecutive lines that form a multi-line bash block.
+            if starts_bash_block(line) && !bash_block_done(&[line.to_string()]) {
+                let mut block: Vec<String> = vec![line.to_string()];
+                while !bash_block_done(&block) && i < n {
+                    let nl = lines[i].trim();
+                    i += 1;
+                    if !nl.is_empty() {
+                        block.push(nl.to_string());
+                    }
+                }
+                let status = run_bash(&block.join("\n"));
+                if matches!(status, crate::executor::ExitStatus::Exit(_)) {
+                    return status;
+                }
+                final_status = status;
+                continue;
+            }
+
+            let status = match self.try_bash_block(line) {
+                Some(status) => status,
+                None => match self.parse_and_execute(line) {
+                    Ok(status) => status,
+                    Err(e) => {
+                        eprintln!("waash: {}", e);
+                        crate::executor::ExitStatus::Code(1)
+                    }
+                },
+            };
+            if matches!(status, crate::executor::ExitStatus::Exit(_)) {
+                return status;
+            }
+            final_status = status;
+        }
+        final_status
     }
 
     /// If `first` starts a multi-line bash control-flow block (if/for/while/
